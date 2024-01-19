@@ -1,12 +1,11 @@
 const TelegramBot = require('node-telegram-bot-api');
-const sequelize = require('./db.js'); 
-const User = require('./models.js'); 
+const schedule = require('node-schedule');
+const sequelize = require('./db.js');
+const User = require('./models.js');
 require('dotenv').config();
-
 
 const token = process.env.TOKEN;
 const apiToken = process.env.API_TOKEN;
-
 
 const bot = new TelegramBot(token, { polling: true });
 
@@ -39,13 +38,11 @@ const formatWeatherData = (data) => {
   return `Current weather in ${cityName}:\nTemperature: ${temperatureCelsius.toFixed(1)}°C\nDescription: ${weatherDescription}`;
 };
 
-
 const start = async () => {
-
   try {
     // Authenticate and synchronize the Sequelize database
     await sequelize.authenticate();
-    await sequelize.sync()
+    await sequelize.sync();
   } catch (error) {
     console.log(error);
   }
@@ -56,39 +53,48 @@ const start = async () => {
     const chatId = msg.chat.id;
 
     // Check if the user exists in the database, create if not
-    const user = await User.findOne({chatId})
+    const user = await User.findOne({ chatId });
 
-    if(!user) {
-      User.create({chatId})
+    if (!user) {
+      await User.create({ chatId });
     }
-  
+
     try {
       // Command handling
       if (text === '/start') {
         return bot.sendMessage(chatId, 'Welcome, send the name of your city to get the weather.');
       }
-  
+
       if (text.startsWith('/subscribe ')) {
         // Extract the city name from the message
         const cityName = text.replace('/subscribe ', '').trim();
 
         // Check if there is a city with that name
         try {
-        await getCurrentWeather(cityName)
-        
-        // Update the subscribed city
-        await user.update({
-          city: cityName,
-          subscribed: true
-        })
-        
-        // Send confirmation message to the user
-        return bot.sendMessage(chatId, `Subscribed to weather updates for ${cityName}`);
+          await getCurrentWeather(cityName);
+
+          // Update the subscribed city
+          await user.update({
+            city: cityName,
+            subscribed: true
+          });
+
+          // Send confirmation message to the user
+          return bot.sendMessage(chatId, `Subscribed to weather updates for ${cityName}`);
         } catch (error) {
           return bot.sendMessage(chatId, `City not found: ${cityName}`);
         }
       }
-  
+
+      // Unsubscribe 
+      if (text === '/unsubscribe') {
+        await user.update({
+          subscribed: false
+        });
+
+        return bot.sendMessage(chatId, 'The subscription is canceled');
+      }
+
       // Handle regular text messages by fetching weather data
       if (text) {
         try {
@@ -102,7 +108,24 @@ const start = async () => {
       return bot.sendMessage(chatId, 'Something went wrong, try again.');
     }
   });
-};
 
+  // Schedule the job outside the event listener to avoid multiple schedules
+  schedule.scheduleJob('0 30 7 * * *', async () => {
+    // Fetch all users who are subscribed
+    const subscribedUsers = await User.findAll({
+      where: { subscribed: true }
+    });
+
+    // Iterate over subscribed users and send weather updates
+    for (const user of subscribedUsers) {
+      try {
+        const weatherData = await getCurrentWeather(user.city);
+        bot.sendMessage(user.chatId, `${weatherData}`);
+      } catch (error) {
+        console.error('Error fetching weather:', error);
+      }
+    }
+  });
+};
 
 start();
